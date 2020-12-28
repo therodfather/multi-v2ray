@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import json
-import time
 import os
-import urllib.request
 
+from v2ray_util import run_type
 from .config import Config
-from .utils import ColorStr
-from .group import SS, Socks, Vmess, Mtproto, Quic, Group, Dyport
+from .utils import ColorStr, get_ip
+from .group import SS, Socks, Vmess, Vless, Mtproto, Quic, Group, Dyport, Trojan, Xtls
 
 class Stats:
     def __init__(self, status=False, door_port=0):
@@ -24,6 +23,7 @@ class Profile:
         self.stats = None
         self.ban_bt = False
         self.user_number = 0
+        self.network = "ipv4"
         self.modify_time = os.path.getmtime(self.path)
         self.read_json()
 
@@ -38,12 +38,6 @@ class Profile:
 
         with open(self.path, 'r') as json_file:
             self.config = json.load(json_file)
-
-        if "inbounds" not in self.config:
-            import converter
-            self.modify_time = os.path.getmtime(self.path)
-            with open(self.path, 'r') as json_file:
-                self.config = json.load(json_file)
 
         #读取配置文件大框架
         conf_inbounds = self.config["inbounds"]
@@ -62,20 +56,24 @@ class Profile:
             if "protocol" in rule and "bittorrent" in rule["protocol"]:
                 self.ban_bt = True
 
-        #获取本机IP地址
-        my_ip = urllib.request.urlopen('http://api.ipify.org').read()
-        local_ip = bytes.decode(my_ip)
+        local_ip = get_ip()
+
+        if ":" in local_ip:
+            self.network = "ipv6"
 
         group_ascii = 64  # before 'A' ascii code
         for index, json_part in enumerate(conf_inbounds):
             group = self.parse_group(json_part, index, local_ip)
             if group != None:
                 group_ascii = group_ascii + 1
-                group.tag = chr(group_ascii)
+                if group_ascii > 90:
+                    group.tag = str(group_ascii)
+                else:
+                    group.tag = chr(group_ascii)
                 self.group_list.append(group)
         
         if len(self.group_list) == 0:
-            print("v2ray json no streamSettings item, please run {} to recreate v2ray json!".format(ColorStr.cyan("v2ray_util new")))
+            print("{} json no streamSettings item, please run {} to recreate {} json!".format(run_type, ColorStr.cyan("{} new".format(run_type)), run_type))
 
         del self.config
 
@@ -91,6 +89,9 @@ class Profile:
 
         port_info = str(part_json["port"]).split("-", 2)
 
+        if "domain" in part_json and part_json["domain"]:
+            conf_ip = part_json["domain"]
+
         if len(port_info) == 2:
             port, end_port = port_info
         else:
@@ -104,24 +105,21 @@ class Profile:
                     dyp.status = True
                     break
 
-        if protocol == "vmess" or protocol == "socks":
+        if protocol in ("vmess", "vless", "socks", "trojan"):
             conf_stream = part_json["streamSettings"]
             tls = conf_stream["security"]
 
             if "sockopt" in conf_stream and "tcpFastOpen" in conf_stream["sockopt"]:
                 tfo = "open" if conf_stream["sockopt"]["tcpFastOpen"] else "close"
 
-            if conf_stream["httpSettings"]:
+            if "httpSettings" in conf_stream and conf_stream["httpSettings"]:
                 path = conf_stream["httpSettings"]["path"]
-            elif conf_stream["wsSettings"]:
+            elif "wsSettings" in conf_stream and conf_stream["wsSettings"]:
                 host = conf_stream["wsSettings"]["headers"]["Host"]
                 path = conf_stream["wsSettings"]["path"]
-            elif conf_stream["tcpSettings"]:
+            elif "tcpSettings" in conf_stream and conf_stream["tcpSettings"]:
                 host = conf_stream["tcpSettings"]["header"]["request"]["headers"]["Host"]
                 header = "http"
-
-            if (tls == "tls"):
-                conf_ip = Config().get_data('domain')
 
             if conf_stream["network"] == "kcp" and "header" in conf_stream["kcpSettings"]:
                 header = conf_stream["kcpSettings"]["header"]["type"]
@@ -139,7 +137,7 @@ class Profile:
             group.node_list.append(ss)
             group.protocol = ss.__class__.__name__
             return group
-        elif protocol == "vmess":
+        elif protocol in ("vmess", "vless", "trojan"):
             clients=conf_settings["clients"]
         elif protocol == "socks":
             clients=conf_settings["accounts"]
@@ -160,6 +158,15 @@ class Profile:
 
             elif protocol == "mtproto":
                 node = Mtproto(self.user_number, client["secret"], user_info=email)
+
+            elif protocol == "vless":
+                if tls == "xtls":
+                    node = Xtls(client["id"], self.user_number, conf_settings["decryption"], email, client["flow"])
+                else:
+                    node = Vless(client["id"], self.user_number, conf_settings["decryption"], email, conf_stream["network"], path, host)
+
+            elif protocol == "trojan":
+                node = Trojan(self.user_number, client["password"], email)
                 
             if not group.protocol:
                 group.protocol = node.__class__.__name__

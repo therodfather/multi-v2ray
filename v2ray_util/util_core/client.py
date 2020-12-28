@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
 import json
 
 from .config import Config
-from .utils import get_ip
-from .group import Vmess, Socks, SS, Mtproto
+from .group import Vmess, Vless, Socks, SS, Mtproto, Trojan, Xtls
 from .selector import ClientSelector
 
 class ClientWriter:
@@ -36,6 +34,17 @@ class ClientWriter:
             user_json["users"][0]["id"] = self.node.password
             user_json["users"][0]["alterId"] = self.node.alter_id
 
+        elif type(self.node) in (Vless, Xtls):
+            self.client_config = self.load_template('client.json')
+            user_json = self.client_config["outbounds"][0]["settings"]["vnext"][0]
+            user_json["users"][0]["id"] = self.node.password
+            del user_json["users"][0]["alterId"]
+            del user_json["users"][0]["security"]
+            user_json["users"][0]["encryption"] = self.node.encryption
+            if type(self.node) == Xtls:
+                user_json["users"][0]["flow"] = self.node.flow
+            self.client_config["outbounds"][0]["protocol"] = "vless" 
+
         elif type(self.node) == Socks:
             self.client_config = self.load_template('client_socks.json')
             user_json = self.client_config["outbounds"][0]["settings"]["servers"][0]
@@ -48,6 +57,11 @@ class ClientWriter:
             user_json["method"] = self.node.method
             user_json["password"] = self.node.password
 
+        elif type(self.node) == Trojan:
+            self.client_config = self.load_template('client_trojan.json')
+            user_json = self.client_config["outbounds"][0]["settings"]["servers"][0]
+            user_json["password"] = self.node.password
+
         elif type(self.node) == Mtproto:
             print("")
             print(_("MTProto protocol only use Telegram, and can't generate client json!"))
@@ -55,16 +69,18 @@ class ClientWriter:
             exit(-1)
 
         user_json["port"] = int(self.group.port)
+        user_json["address"] = self.group.ip
 
         if type(self.node) != SS:
             self.client_config["outbounds"][0]["streamSettings"] = self.config["inbounds"][self.group.index]["streamSettings"]
 
         if self.group.tls == 'tls':
-            content = self.config_factory.get_data("domain")
-            user_json["address"] = str(content)
             self.client_config["outbounds"][0]["streamSettings"]["tlsSettings"] = {}
-        else:
-            user_json["address"] = str(get_ip())
+        elif self.group.tls == 'xtls':
+            self.client_config["outbounds"][0]["streamSettings"]["xtlsSettings"]["serverName"] = self.group.ip
+            del self.client_config["outbounds"][0]["streamSettings"]["xtlsSettings"]["certificates"]
+            del self.client_config["outbounds"][0]["streamSettings"]["xtlsSettings"]["alpn"]
+            del self.client_config["outbounds"][0]["mux"]
 
     def write(self):
         '''
@@ -78,11 +94,13 @@ class ClientWriter:
 
 def generate():
     cs = ClientSelector(_('generate client json'))
+    if not hasattr(cs, 'client_index'):
+        return
     client_index = cs.client_index
     group = cs.group
 
     if group == None:
-        exit(-1)
+        pass
     else:
         cw = ClientWriter(group, client_index)
         cw.transform()
